@@ -1159,7 +1159,8 @@ def lift_jvp(num_errs: int, num_consts: int,
   def jvp(*xs):
     n, ragged = divmod(len(xs), 2)
     assert not ragged
-    primals, tangents = xs[num_consts+num_errs:n], xs[n+num_consts+num_errs:]
+    # the inputs are the error values, then the consts, then the primals
+    primals, tangents = xs[num_errs+num_consts:n], xs[n+num_errs+num_consts:]
     zeros = [type(t) is SymbolicZero for t in tangents]
     jvp_jaxpr, jvp_consts, out_zeros = jvp_jaxpr_fun.call_wrapped(*zeros)
     nonzero_tangents = [t for t in tangents if type(t) is not SymbolicZero]
@@ -1170,8 +1171,7 @@ def lift_jvp(num_errs: int, num_consts: int,
                     if z else next(nz_out_tangents_)
                     for p, z in zip(out_primals, out_zeros)]
     assert next(nz_out_tangents_, None) is None
-    primal_errs = xs[num_consts:num_consts+num_errs]
-    tangent_errs = xs[n+num_consts:n+num_consts+num_errs]
+    primal_errs, tangent_errs = xs[:num_errs], xs[n:n+num_errs]
     return [*primal_errs, *out_primals, *tangent_errs, *out_tangents]
   return lu.wrap_init(jvp, debug_info=jvp_jaxpr_fun.debug_info)
 
