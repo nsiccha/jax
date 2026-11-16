@@ -106,6 +106,9 @@ When releasing, please add the new-release-boilerplate to docs/pallas/CHANGELOG.
     `fp` value is infinite; it now returns the knot value or the signed
     infinity, matching NumPy. For complex `fp`, the real and imaginary parts
     are now interpolated separately, as in NumPy.
+  * Fixed {mod}`jax.experimental.checkify` giving wrong gradients for, or
+    failing to differentiate, a {func}`jax.custom_vjp` function that is called
+    after a check, such as a {func}`jax.experimental.checkify.check`.
 
 ## JAX 0.12.0.1 (October 23, 2026)
 
