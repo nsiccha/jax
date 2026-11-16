@@ -55,6 +55,10 @@ When releasing, please add the new-release-boilerplate to docs/pallas/CHANGELOG.
     `acos(x) / pi`, `atan(x) / pi`, and `atan2(x, y) / pi`).
   * Added {func}`jax.lax.exp2m1` and {func}`jax.lax.log2p1`, which compute
     `2**x - 1` and `log2(1 + x)` without losing precision near `x = 0`.
+  * Added the `has_error` method to {class}`jax.experimental.checkify.Error`,
+    which returns whether an error happened as a boolean array. Unlike `get`
+    and `throw`, it can be called on a traced error value, e.g. to handle an
+    error inside of {func}`jax.jit`.
 
 * Breaking changes
   * The `jax_use_simplified_jaxpr_constants` configuration flag is now `True`

@@ -1401,6 +1401,37 @@ class AssertPrimitiveTests(jtu.JaxTestCase):
     self.assertIsNotNone(err.get())
     self.assertStartsWith(err.get(), "hi")
 
+  def test_has_error(self):
+    def f(x):
+      checkify.check(x > 0, "must be positive!")
+      return jnp.log(x)
+    checked_f = checkify.checkify(f, errors=checkify.all_checks)
+
+    err, _ = checked_f(1.)
+    self.assertArraysEqual(err.has_error(), False)
+    err, _ = checked_f(-1.)  # failed check, and a nan
+    self.assertArraysEqual(err.has_error(), True)
+    self.assertArraysEqual(checkify.checkify(f)(-1.)[0].has_error(), True)
+
+    # an error without any checks
+    err, _ = checkify.checkify(lambda x: x)(1.)
+    self.assertArraysEqual(err.has_error(), False)
+
+    # unlike get and throw, it can be called on a traced error
+    @jax.jit
+    def log_or_neg_inf(x):
+      err, y = checked_f(x)
+      return jnp.where(err.has_error(), -jnp.inf, y)
+    self.assertAllClose(log_or_neg_inf(2.), jnp.log(2.))
+    self.assertAllClose(log_or_neg_inf(-1.), -jnp.inf)
+    xs = jnp.array([-1., 2., 0.])
+    self.assertAllClose(jax.vmap(log_or_neg_inf)(xs),
+                        jnp.array([-jnp.inf, jnp.log(2.), -jnp.inf]))
+
+    # a mapped error gives one boolean per element
+    errs, _ = jax.vmap(checked_f)(xs)
+    self.assertArraysEqual(errs.has_error(), np.array([True, False, True]))
+
   def test_check_error_scanned(self):
     def body(carry, x):
       checkify.check(jnp.all(x > 0), "should be positive")
