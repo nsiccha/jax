@@ -109,6 +109,9 @@ When releasing, please add the new-release-boilerplate to docs/pallas/CHANGELOG.
   * Fixed {mod}`jax.experimental.checkify` giving wrong gradients for, or
     failing to differentiate, a {func}`jax.custom_vjp` function that is called
     after a check, such as a {func}`jax.experimental.checkify.check`.
+  * Fixed {mod}`jax.experimental.checkify` losing an error from before a call
+    to a {func}`jax.custom_jvp` function that closes over an array, when the
+    checkified function is differentiated.
 
 ## JAX 0.12.0.1 (October 23, 2026)
 
