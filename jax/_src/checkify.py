@@ -1151,6 +1151,9 @@ def lift_jvp(num_errs: int, num_consts: int,
 def custom_vjp_call_rule(ctx: CheckifyContext, in_err, enabled_errors, *in_vals,
                          call_jaxpr: core.Jaxpr, fwd_jaxpr_thunk, num_consts,
                          bwd: lu.WrappedFun, out_trees, symbolic_zeros: bool):
+  # As with custom_jvp_call_rule, we don't add checks to the custom rule. Since
+  # checkified_fun outputs an error, the fwd rule must too: it just forwards
+  # the input error. The bwd rule ignores the error values.
   err_vals, err_tree = jtu.tree_flatten(in_err)
   num_errs = err_tree.num_leaves
   checkified_fun = lu.wrap_init(
@@ -1160,31 +1163,48 @@ def custom_vjp_call_rule(ctx: CheckifyContext, in_err, enabled_errors, *in_vals,
   checkified_fun, fun_metadata = _flatten_and_get_error_metadata_thunk(
       checkified_fun)
 
+  def out_trees_():
+    # the inputs forwarded as residuals come after the error values
+    out_tree, res_tree, input_fwds = out_trees()
+    input_fwds = [f if f is None else f + num_errs for f in input_fwds]
+    return out_tree, res_tree, input_fwds
+
+  fwd = custom_derivatives.lift_fwd(num_consts, fwd_jaxpr_thunk)
   def checkified_fwd(*args):
     # TODO(lenamartens, sharadmv): why not checkify here?
-    xs, zeros = args[::2], args[1::2]
-    xs, zeros = xs[num_errs:], zeros[num_errs:]
-    fwd_jaxpr, fwd_consts = fwd_jaxpr_thunk.call_wrapped(*zeros)
-    xs_without_consts = xs[num_consts:]
-    return core.eval_jaxpr(fwd_jaxpr, fwd_consts, *xs_without_consts)
+    errs = args[:2 * num_errs:2]  # the errs' vals, without their nzs
+    res_and_outs = fwd.call_wrapped(*args[2 * num_errs:])
+    _, res_tree, input_fwds = out_trees()
+    num_res_out = res_tree.num_leaves - sum(f is not None for f in input_fwds)
+    res, outs = split_list(res_and_outs, [num_res_out])
+    return [*res, *errs, *outs]
 
   # TODO(necula): the fwd result_paths are not quite the same as fun_jaxpr
   checkified_fwd_wrapped = lu.wrap_init(checkified_fwd,
                                         debug_info=fwd_jaxpr_thunk.debug_info)
+  # the error values and the consts get zero cotangents
+  zero_cts = tuple(ad.Zero(core.typeof(x).to_ct_aval())
+                   for x in [*err_vals, *in_vals[:num_consts]])
   def bwd_with_errs(*args):
-    cts, logs = bwd.call_wrapped(*args)  # flat bwd returns a (cts, logs) pair
-    return (*(None,) * num_errs, *cts), logs
+    # the bwd rule doesn't expect cotangents for the error values
+    _, res_tree, _ = out_trees()
+    res, cts_out = split_list(args, [res_tree.num_leaves])
+    # flat bwd returns a (cts, logs) pair
+    cts_in, logs = bwd.call_wrapped(*res, *cts_out[num_errs:])
+    return (*zero_cts, *cts_in), logs
   bwd_ = lu.wrap_init(bwd_with_errs, debug_info=bwd.debug_info)
   checkified_fwd_wrapped, fwd_out_tree = flatten_fun_output(checkified_fwd_wrapped)
   all_outs = custom_derivatives.custom_vjp_call_p.bind(
-      *err_vals, *in_vals, out_trees=out_trees, symbolic_zeros=symbolic_zeros,
+      *err_vals, *in_vals, out_trees=out_trees_, symbolic_zeros=symbolic_zeros,
       subfuns=(checkified_fun, checkified_fwd_wrapped, bwd_))
   fst, out_metadata = lu.merge_linear_aux(fun_metadata, fwd_out_tree)
   if fst:
     err_and_out_tree, _ = out_metadata
     out_err, out_vals = tree_unflatten(err_and_out_tree, all_outs)
   else:
-    out_err, out_vals = in_err, all_outs
+    err_vals, out_vals = split_list(all_outs, [num_errs])
+    # forward input error to output
+    out_err = jtu.tree_unflatten(err_tree, err_vals)
   return out_err, out_vals
 error_checks[custom_derivatives.custom_vjp_call_p] = custom_vjp_call_rule
 
