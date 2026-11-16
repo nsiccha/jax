@@ -112,6 +112,10 @@ When releasing, please add the new-release-boilerplate to docs/pallas/CHANGELOG.
   * Fixed {mod}`jax.experimental.checkify` losing an error from before a call
     to a {func}`jax.custom_jvp` function that closes over an array, when the
     checkified function is differentiated.
+  * Fixed {mod}`jax.experimental.checkify` failing to differentiate a staged
+    call to a {func}`jax.custom_jvp` or {func}`jax.custom_vjp` function whose
+    body adds a new category of error, as in `jax.grad` of `jax.jit` of
+    `checkify` with automatic checks.
 
 ## JAX 0.12.0.1 (October 23, 2026)
 

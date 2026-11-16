@@ -39,7 +39,7 @@ from jax._src import sharding_impls
 from jax._src import source_info_util
 from jax._src import traceback_util
 from jax._src import tree_util as jtu
-from jax._src.ad_util import SymbolicZero
+from jax._src.ad_util import SymbolicZero, zeros_like_aval
 from jax._src.hijax import (
     call_hi_primitive_p, CustomJVPTraced, CustomVJPTraced)
 from jax._src.interpreters import ad
@@ -1113,7 +1113,11 @@ def custom_jvp_call_rule(ctx: CheckifyContext, in_err: Error,
       debug_info=dbg)
   partial_checkify, f_metadata = _flatten_and_get_error_metadata_thunk(
       partial_checkify)
-  jvp = lift_jvp(err_tree.num_leaves, num_consts, jvp_jaxpr_fun)
+  def forward_errs(primal_errs, tangent_errs):
+    err = _forward_error(f_metadata, err_tree, primal_errs)
+    err_dot = _add_zero_tangents(err, tree_unflatten(err_tree, tangent_errs))
+    return jtu.tree_leaves(err), jtu.tree_leaves(err_dot)
+  jvp = lift_jvp(err_tree.num_leaves, num_consts, jvp_jaxpr_fun, forward_errs)
   jvp, jvp_out_tree = flatten_fun_output(jvp)
   all_outs = custom_derivatives.custom_jvp_call_p.bind(
       *err_vals, *in_vals, subfuns=(partial_checkify, jvp), **params)
@@ -1128,13 +1132,36 @@ def custom_jvp_call_rule(ctx: CheckifyContext, in_err: Error,
   return out_err, out_vals
 error_checks[custom_derivatives.custom_jvp_call_p] = custom_jvp_call_rule
 
+# A custom rule forwards the input error in place of the error of the
+# checkified function. If that function has already run, the call was staged
+# with its outputs, and its error can have effects that the input error lacks.
+# Those get placeholders, so that the rule outputs an error of the same type.
+def _forward_error(fun_metadata, err_tree: PyTreeDef, err_vals) -> Error:
+  error = tree_unflatten(err_tree, err_vals)
+  try:
+    _, effects = fun_metadata()
+  except lu.StoreException:
+    return error
+  return error._add_placeholder_effects(effects)
+
+def _add_zero_tangents(error: Error, tangent: Error) -> Error:
+  """Gives `tangent` zeros for the effects that only `error` has."""
+  zero = lambda x: zeros_like_aval(core.typeof(x).to_tangent_aval())
+  new = [e for e in error._pred if e not in tangent._pred]
+  return Error(
+      {**tangent._pred, **{e: zero(error._pred[e]) for e in new}},
+      {**tangent._code, **{e: zero(error._code[e]) for e in new}},
+      tangent._metadata,
+      {**tangent._payload,
+       **{e: tree_map(zero, error._payload[e]) for e in new}})
+
 # Compared to custom_derivatives.lift_jvp, we're handling the extra inputs and
 # outputs that checkify adds (just forwarding the error data's primal and
 # tangent components). The jaxpr in jvp_jaxpr_fun doesn't expect those.
 # TODO(mattjj): can we simplify this, or dedup with custom_derivatives.lift_jvp?
 # Adding another layer of lu.transformation was tricky, though maybe doable.
-def lift_jvp(num_errs: int, num_consts: int,
-             jvp_jaxpr_fun: lu.WrappedFun) -> lu.WrappedFun:
+def lift_jvp(num_errs: int, num_consts: int, jvp_jaxpr_fun: lu.WrappedFun,
+             forward_errs: Callable) -> lu.WrappedFun:
   def jvp(*xs):
     n, ragged = divmod(len(xs), 2)
     assert not ragged
@@ -1150,7 +1177,7 @@ def lift_jvp(num_errs: int, num_consts: int,
                     if z else next(nz_out_tangents_)
                     for p, z in zip(out_primals, out_zeros)]
     assert next(nz_out_tangents_, None) is None
-    primal_errs, tangent_errs = xs[:num_errs], xs[n:n+num_errs]
+    primal_errs, tangent_errs = forward_errs(xs[:num_errs], xs[n:n+num_errs])
     return [*primal_errs, *out_primals, *tangent_errs, *out_tangents]
   return lu.wrap_init(jvp, debug_info=jvp_jaxpr_fun.debug_info)
 
@@ -1183,7 +1210,8 @@ def custom_vjp_call_rule(ctx: CheckifyContext, in_err, enabled_errors, *in_vals,
     _, res_tree, input_fwds = out_trees()
     num_res_out = res_tree.num_leaves - sum(f is not None for f in input_fwds)
     res, outs = split_list(res_and_outs, [num_res_out])
-    return [*res, *errs, *outs]
+    err = _forward_error(fun_metadata, err_tree, errs)
+    return [*res, *jtu.tree_leaves(err), *outs]
 
   # TODO(necula): the fwd result_paths are not quite the same as fun_jaxpr
   checkified_fwd_wrapped = lu.wrap_init(checkified_fwd,
@@ -1192,7 +1220,7 @@ def custom_vjp_call_rule(ctx: CheckifyContext, in_err, enabled_errors, *in_vals,
   zero_cts = tuple(ad.Zero(core.typeof(x).to_ct_aval())
                    for x in [*err_vals, *in_vals[:num_consts]])
   bwd_ = custom_derivatives.prepend_input_cts(
-      _drop_error_cts(bwd, num_errs, out_trees), zero_cts)
+      _drop_error_cts(bwd, out_trees), zero_cts)
   checkified_fwd_wrapped, fwd_out_tree = flatten_fun_output(checkified_fwd_wrapped)
   all_outs = custom_derivatives.custom_vjp_call_p.bind(
       *err_vals, *in_vals, out_trees=out_trees_, symbolic_zeros=symbolic_zeros,
@@ -1210,27 +1238,30 @@ error_checks[custom_derivatives.custom_vjp_call_p] = custom_vjp_call_rule
 
 # The bwd rule doesn't expect cotangents for the error values that checkify
 # adds to the outputs of the fwd rule, so we drop them.
-def _drop_error_cts(bwd: lu.WrappedFun, num_errs: int, out_trees
-                    ) -> lu.WrappedFun:
-  def drop(args):
+def _drop_error_cts(bwd: lu.WrappedFun, out_trees) -> lu.WrappedFun:
+  def drop(cts_out):
+    out_tree, _, _ = out_trees()
+    return cts_out[len(cts_out) - out_tree.num_leaves:]
+  if not bwd.transforms and isinstance(bwd.f, ad.CustomBwdWithAccums):
+    return lu.wrap_init(_DropErrorCtsBwdWithAccums(bwd.f, drop, out_trees),
+                        debug_info=bwd.debug_info)
+  def new_bwd(*args):
     _, res_tree, _ = out_trees()
     res, cts_out = split_list(args, [res_tree.num_leaves])
-    return [*res, *cts_out[num_errs:]]
-  if not bwd.transforms and isinstance(bwd.f, ad.CustomBwdWithAccums):
-    return lu.wrap_init(_DropErrorCtsBwdWithAccums(bwd.f, num_errs, drop),
-                        debug_info=bwd.debug_info)
-  return lu.wrap_init(lambda *args: bwd.call_wrapped(*drop(args)),
-                      debug_info=bwd.debug_info)
+    return bwd.call_wrapped(*res, *drop(cts_out))
+  return lu.wrap_init(new_bwd, debug_info=bwd.debug_info)
 
 class _DropErrorCtsBwdWithAccums(ad.CustomBwdWithAccums):
-  def __init__(self, bwd, num_errs, drop):
-    self.bwd, self.num_errs, self.drop = bwd, num_errs, drop
+  def __init__(self, bwd, drop, out_trees):
+    self.bwd, self.drop, self.out_trees = bwd, drop, out_trees
 
   def call_with_accums(self, res, cts_out, accums):
-    return self.bwd.call_with_accums(res, cts_out[self.num_errs:], accums)
+    return self.bwd.call_with_accums(res, self.drop(cts_out), accums)
 
   def __call__(self, *args):
-    return self.bwd(*self.drop(args))
+    _, res_tree, _ = self.out_trees()
+    res, cts_out = split_list(args, [res_tree.num_leaves])
+    return self.bwd(*res, *self.drop(cts_out))
 
 
 def check_discharge_rule(ctx: CheckifyContext, error, enabled_errors, *args,
