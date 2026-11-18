@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/jax",
     "ref": "dogfood",
-    "sha": "a67d713e1c649b84dac8c456b0576086df5bb546"
+    "sha": "5cd3c4253c10f6c9a7705b1709a824c6fca2f160"
   },
   "upstream": {
     "repo": "jax-ml/jax",
-    "ref": "jax-v0.12.0.1",
-    "sha": "dc4af684446e65ee98eee8090e1ff6f8211473fb"
+    "ref": "main",
+    "sha": "4ced1e1f63bacb676693920add51ec9e15c40b12"
   },
-  "prepared_at": "2026-11-18T12:05:38Z",
+  "prepared_at": "2026-11-18T22:11:29+00:00",
   "problems": [
     {
       "id": "custom-vjp-input-residual",
@@ -26,32 +26,67 @@
         {
           "url": "https://github.com/jax-ml/jax/pull/40475",
           "relation": "related"
+        },
+        {
+          "relation": "related",
+          "url": "https://github.com/jax-ml/jax/pull/41717"
         }
       ],
       "fix": {
-        "branch": "jax-v0.12.0.1-checkify",
+        "branch": "dogfood",
         "commits": [
           {
-            "sha": "b597e3989076e5605b0f479f7a424120ca9cfd16",
+            "sha": "4f4b0a77e77e1995ba3f42232c92fcb3006815f7",
             "title": "[checkify] fix custom_vjp gradients once checkify carries an error",
             "original": [
-              "b597e3989076e5605b0f479f7a424120ca9cfd16"
+              "b597e3989076e5605b0f479f7a424120ca9cfd16",
+              "4f4b0a77e77e1995ba3f42232c92fcb3006815f7"
             ]
           }
         ],
-        "why_together": "One release-line change corrects residual forwarding, error leaves, constant slots and cotangent handling for the custom VJP rule and includes regressions for each affected transform."
+        "why_together": "The mainline implementation and its regression tests are one change. The merge also retains the corresponding release-line commit."
       },
       "depends_on": [],
       "requires": [
         {
           "name": "JAX CPU runtime",
           "repo": "jax-ml/jax",
-          "sha": "dc4af684446e65ee98eee8090e1ff6f8211473fb",
-          "build": "jaxlib 0.12.0.1",
-          "why": "Paired binary used to run the Python release-line regressions."
+          "sha": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "build": "jaxlib 0.12.1",
+          "why": "Compatible CPU binary used to validate these upstream-main and dogfood source revisions."
         }
       ],
       "validation": [
+        {
+          "base": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "native_build": "jaxlib 0.12.1 CPU",
+          "tests": [
+            "tests/checkify_test.py::test_custom_vjp_grad_in_cond",
+            "tests/checkify_test.py::test_custom_vjp_grad_in_fori_loop",
+            "tests/checkify_test.py::test_custom_vjp_grad_in_scan",
+            "tests/checkify_test.py::test_custom_vjp_grad_in_vmap",
+            "tests/checkify_test.py::test_custom_vjp_grad_in_vmap_with_batched_check",
+            "tests/checkify_test.py::test_custom_vjp_grad_of_vmap_of_checkify",
+            "tests/checkify_test.py::test_custom_vjp_input_residual_after_check"
+          ],
+          "result": "failed",
+          "detail": "7 regression cases failed on upstream 4ced1e1f63bacb676693920add51ec9e15c40b12. The standalone example produced 1.0."
+        },
+        {
+          "base": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "native_build": "jaxlib 0.12.1 CPU",
+          "tests": [
+            "tests/checkify_test.py::test_custom_vjp_grad_in_cond",
+            "tests/checkify_test.py::test_custom_vjp_grad_in_fori_loop",
+            "tests/checkify_test.py::test_custom_vjp_grad_in_scan",
+            "tests/checkify_test.py::test_custom_vjp_grad_in_vmap",
+            "tests/checkify_test.py::test_custom_vjp_grad_in_vmap_with_batched_check",
+            "tests/checkify_test.py::test_custom_vjp_grad_of_vmap_of_checkify",
+            "tests/checkify_test.py::test_custom_vjp_input_residual_after_check"
+          ],
+          "result": "passed",
+          "detail": "The same 7 cases passed at 5cd3c4253c10f6c9a7705b1709a824c6fca2f160. The complete checkify suite passed all 131 cases. The standalone example produced -0.9899925."
+        },
         {
           "base": "dc4af684446e65ee98eee8090e1ff6f8211473fb",
           "native_build": "jaxlib 0.12.0.1 CPU",
@@ -73,8 +108,8 @@
       ],
       "draft": {
         "title": "checkify gives a custom VJP the wrong residual after a check",
-        "prepared_at": "2026-11-18T12:05:38Z",
-        "body": "## Reproducer\n\nOn JAX 0.12.0.1 with the CPU runtime, run\n\n```python\nimport jax\nimport jax.numpy as jnp\nfrom jax.experimental import checkify\n\n@jax.custom_vjp\ndef f(x):\n    return jnp.sin(x)\n\nf.defvjp(lambda x: (jnp.sin(x), x), lambda x, g: (g * jnp.cos(x),))\n\ndef checked_input(x):\n    checkify.check(x < 100., \"too large\")\n    return f(x)\n\ng = jax.grad(lambda x: checkify.checkify(checked_input)(x)[1])\nprint(g(3.))\n```\n\n## Observed\n\nThe unpatched release returns 1.0. A residual forwarded from the function input resolves to an error leaf. Related staged calls raise output-arity errors.\n\n## Expected\n\nThe derivative is cos(3), approximately −0.9899925.\n\n## Proposed fix\n\nShift forwarded residual indices by the number of error leaves, forward the error from the custom forward rule, and handle the extra error and constant cotangents in the backward rule."
+        "prepared_at": "2026-11-18T22:11:29+00:00",
+        "body": "## Reproducer\n\nOn JAX main at `4ced1e1f63ba` with jaxlib 0.12.1 on CPU, run\n\n```python\nimport jax\nimport jax.numpy as jnp\nfrom jax.experimental import checkify\n\n@jax.custom_vjp\ndef f(x):\n    return jnp.sin(x)\n\nf.defvjp(lambda x: (jnp.sin(x), x), lambda x, g: (g * jnp.cos(x),))\n\ndef checked_input(x):\n    checkify.check(x < 100., \"too large\")\n    return f(x)\n\ng = jax.grad(lambda x: checkify.checkify(checked_input)(x)[1])\nprint(g(3.))\n```\n\n## Observed\n\nUpstream returns 1.0. A residual forwarded from the function input resolves to an error leaf. Related staged calls raise output-arity errors.\n\n## Expected\n\nThe derivative is cos(3), approximately −0.9899925.\n\n## Proposed fix\n\nShift forwarded residual indices by the number of error leaves, forward the error from the custom forward rule, and handle the extra error and constant cotangents in the backward rule."
       }
     },
     {
@@ -85,29 +120,48 @@
       "repairs": [],
       "upstream_refs": [],
       "fix": {
-        "branch": "jax-v0.12.0.1-checkify",
+        "branch": "dogfood",
         "commits": [
           {
-            "sha": "16e6fd42b027813b3e507b07be542c2ecfcc7a15",
+            "sha": "cbf2526e0855bcbe07e6fcf5b2c776771259bc3a",
             "title": "[checkify] add Error.has_error, a predicate for traced error values",
             "original": [
-              "16e6fd42b027813b3e507b07be542c2ecfcc7a15"
+              "16e6fd42b027813b3e507b07be542c2ecfcc7a15",
+              "cbf2526e0855bcbe07e6fcf5b2c776771259bc3a"
             ]
           }
         ],
-        "why_together": "The public predicate, its documentation and tests for scalar, mapped and empty error sets form one change."
+        "why_together": "The mainline implementation and its regression tests are one change. The merge also retains the corresponding release-line commit."
       },
       "depends_on": [],
       "requires": [
         {
           "name": "JAX CPU runtime",
           "repo": "jax-ml/jax",
-          "sha": "dc4af684446e65ee98eee8090e1ff6f8211473fb",
-          "build": "jaxlib 0.12.0.1",
-          "why": "Paired binary used to run the Python release-line regressions."
+          "sha": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "build": "jaxlib 0.12.1",
+          "why": "Compatible CPU binary used to validate these upstream-main and dogfood source revisions."
         }
       ],
       "validation": [
+        {
+          "base": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "native_build": "jaxlib 0.12.1 CPU",
+          "tests": [
+            "tests/checkify_test.py::test_has_error"
+          ],
+          "result": "failed",
+          "detail": "1 regression cases failed on upstream 4ced1e1f63bacb676693920add51ec9e15c40b12. The standalone example produced AttributeError: 'Error' object has no attribute 'has_error'."
+        },
+        {
+          "base": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "native_build": "jaxlib 0.12.1 CPU",
+          "tests": [
+            "tests/checkify_test.py::test_has_error"
+          ],
+          "result": "passed",
+          "detail": "The same 1 cases passed at 5cd3c4253c10f6c9a7705b1709a824c6fca2f160. The complete checkify suite passed all 131 cases. The standalone example produced -inf."
+        },
         {
           "base": "dc4af684446e65ee98eee8090e1ff6f8211473fb",
           "native_build": "jaxlib 0.12.0.1 CPU",
@@ -129,8 +183,8 @@
       ],
       "draft": {
         "title": "A checkify Error has no public Boolean predicate inside jit",
-        "prepared_at": "2026-11-18T12:05:38Z",
-        "body": "## Reproducer\n\nOn JAX 0.12.0.1 with the CPU runtime, run\n\n```python\nimport jax\nimport jax.numpy as jnp\nfrom jax.experimental import checkify\n\ndef positive_log(x):\n    checkify.check(x > 0, \"must be positive\")\n    return jnp.log(x)\n\n@jax.jit\ndef safe_log(x):\n    err, y = checkify.checkify(positive_log)(x)\n    return jnp.where(err.has_error(), -jnp.inf, y)\n\nprint(safe_log(-1.))\n```\n\n## Observed\n\nThe release has no Error.has_error() method. The concrete-error accessors cannot supply a predicate while tracing.\n\n## Expected\n\nA public predicate should select −inf for this input, stay false for a successful check and preserve mapped dimensions.\n\n## Proposed fix\n\nCombine the error predicates with logical OR, with a false result for an empty error set. Expose this as a traceable method and test it under jit and vmap."
+        "prepared_at": "2026-11-18T22:11:29+00:00",
+        "body": "## Reproducer\n\nOn JAX main at `4ced1e1f63ba` with jaxlib 0.12.1 on CPU, run\n\n```python\nimport jax\nimport jax.numpy as jnp\nfrom jax.experimental import checkify\n\ndef positive_log(x):\n    checkify.check(x > 0, \"must be positive\")\n    return jnp.log(x)\n\n@jax.jit\ndef safe_log(x):\n    err, y = checkify.checkify(positive_log)(x)\n    return jnp.where(err.has_error(), -jnp.inf, y)\n\nprint(safe_log(-1.))\n```\n\n## Observed\n\nUpstream has no Error.has_error() method. The concrete-error accessors cannot supply a predicate while tracing.\n\n## Expected\n\nA public predicate should select −inf for this input, stay false for a successful check and preserve mapped dimensions.\n\n## Proposed fix\n\nCombine the error predicates with logical OR, with a false result for an empty error set. Expose this as a traceable method and test it under jit and vmap."
       }
     },
     {
@@ -146,29 +200,48 @@
         }
       ],
       "fix": {
-        "branch": "jax-v0.12.0.1-checkify",
+        "branch": "dogfood",
         "commits": [
           {
-            "sha": "1635e606d943cd1f1955efdd81404fdbac0a61c6",
+            "sha": "c5ede58fbcc0e8d9318f67e598514852966039fb",
             "title": "[checkify] fix the error forwarded by a custom_jvp rule when the call has consts",
             "original": [
-              "1635e606d943cd1f1955efdd81404fdbac0a61c6"
+              "1635e606d943cd1f1955efdd81404fdbac0a61c6",
+              "c5ede58fbcc0e8d9318f67e598514852966039fb"
             ]
           }
         ],
-        "why_together": "This commit corrects the error slots in lift_jvp and adds a closure regression. It does not use Error.has_error()."
+        "why_together": "The mainline implementation and its regression tests are one change. The merge also retains the corresponding release-line commit."
       },
       "depends_on": [],
       "requires": [
         {
           "name": "JAX CPU runtime",
           "repo": "jax-ml/jax",
-          "sha": "dc4af684446e65ee98eee8090e1ff6f8211473fb",
-          "build": "jaxlib 0.12.0.1",
-          "why": "Paired binary used to run the Python release-line regressions."
+          "sha": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "build": "jaxlib 0.12.1",
+          "why": "Compatible CPU binary used to validate these upstream-main and dogfood source revisions."
         }
       ],
       "validation": [
+        {
+          "base": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "native_build": "jaxlib 0.12.1 CPU",
+          "tests": [
+            "tests/checkify_test.py::test_custom_jvp_closing_over_array"
+          ],
+          "result": "failed",
+          "detail": "1 regression cases failed on upstream 4ced1e1f63bacb676693920add51ec9e15c40b12. The standalone example produced None."
+        },
+        {
+          "base": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "native_build": "jaxlib 0.12.1 CPU",
+          "tests": [
+            "tests/checkify_test.py::test_custom_jvp_closing_over_array"
+          ],
+          "result": "passed",
+          "detail": "The same 1 cases passed at 5cd3c4253c10f6c9a7705b1709a824c6fca2f160. The complete checkify suite passed all 131 cases. The standalone example produced too large (`check` failed)."
+        },
         {
           "base": "dc4af684446e65ee98eee8090e1ff6f8211473fb",
           "native_build": "jaxlib 0.12.0.1 CPU",
@@ -190,8 +263,8 @@
       ],
       "draft": {
         "title": "A custom JVP closing over an array loses a preceding checkify error",
-        "prepared_at": "2026-11-18T12:05:38Z",
-        "body": "## Reproducer\n\nOn JAX 0.12.0.1 with the CPU runtime, run\n\n```python\nimport jax\nimport jax.numpy as jnp\nfrom jax.experimental import checkify\n\nc = jnp.arange(3.) + 1.\n@jax.custom_jvp\ndef f(x):\n    return x * c\nf.defjvp(lambda p, t: (f(p[0]), t[0] * c))\n\ndef g(x):\n    checkify.check(x[0] < 100., \"too large\")\n    return f(x).sum()\n\n(err, _), _ = jax.jvp(checkify.checkify(g), (jnp.full(3, 200.),), (jnp.ones(3),))\nprint(err.get())\n```\n\n## Observed\n\nThe error is silently lost and get() returns None.\n\n## Expected\n\nThe check failed before the custom call, so the returned error should contain “too large”.\n\n## Proposed fix\n\nRead the leading error leaves from the staged inputs and tangents before skipping the closed-over constants for the JVP computation."
+        "prepared_at": "2026-11-18T22:11:29+00:00",
+        "body": "## Reproducer\n\nOn JAX main at `4ced1e1f63ba` with jaxlib 0.12.1 on CPU, run\n\n```python\nimport jax\nimport jax.numpy as jnp\nfrom jax.experimental import checkify\n\nc = jnp.arange(3.) + 1.\n@jax.custom_jvp\ndef f(x):\n    return x * c\nf.defjvp(lambda p, t: (f(p[0]), t[0] * c))\n\ndef g(x):\n    checkify.check(x[0] < 100., \"too large\")\n    return f(x).sum()\n\n(err, _), _ = jax.jvp(checkify.checkify(g), (jnp.full(3, 200.),), (jnp.ones(3),))\nprint(err.get())\n```\n\n## Observed\n\nThe error is silently lost and get() returns None.\n\n## Expected\n\nThe check failed before the custom call, so the returned error should contain “too large”.\n\n## Proposed fix\n\nRead the leading error leaves from the staged inputs and tangents before skipping the closed-over constants for the JVP computation."
       }
     },
     {
@@ -207,17 +280,18 @@
         }
       ],
       "fix": {
-        "branch": "jax-v0.12.0.1-checkify",
+        "branch": "dogfood",
         "commits": [
           {
-            "sha": "a67d713e1c649b84dac8c456b0576086df5bb546",
+            "sha": "8dc3f4e7057a02dae70dadfb0c09a3127c08b645",
             "title": "[checkify] output the function's error effects from custom_jvp and custom_vjp rules",
             "original": [
-              "a67d713e1c649b84dac8c456b0576086df5bb546"
+              "a67d713e1c649b84dac8c456b0576086df5bb546",
+              "8dc3f4e7057a02dae70dadfb0c09a3127c08b645"
             ]
           }
         ],
-        "why_together": "The JVP and VJP rules require the same expansion to the staged output error structure. Apply this release commit after the custom VJP forwarding and custom JVP input-order repairs."
+        "why_together": "The mainline implementation and its regression tests are one change. The merge also retains the corresponding release-line commit."
       },
       "depends_on": [
         "custom-vjp-input-residual",
@@ -227,12 +301,32 @@
         {
           "name": "JAX CPU runtime",
           "repo": "jax-ml/jax",
-          "sha": "dc4af684446e65ee98eee8090e1ff6f8211473fb",
-          "build": "jaxlib 0.12.0.1",
-          "why": "Paired binary used to run the Python release-line regressions."
+          "sha": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "build": "jaxlib 0.12.1",
+          "why": "Compatible CPU binary used to validate these upstream-main and dogfood source revisions."
         }
       ],
       "validation": [
+        {
+          "base": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "native_build": "jaxlib 0.12.1 CPU",
+          "tests": [
+            "tests/checkify_test.py::test_custom_derivative_new_error_effect0",
+            "tests/checkify_test.py::test_custom_derivative_new_error_effect1"
+          ],
+          "result": "failed",
+          "detail": "2 regression cases failed on upstream 4ced1e1f63bacb676693920add51ec9e15c40b12. The standalone example produced ValueError: foreach() argument 2 is shorter than argument 1."
+        },
+        {
+          "base": "4ced1e1f63bacb676693920add51ec9e15c40b12",
+          "native_build": "jaxlib 0.12.1 CPU",
+          "tests": [
+            "tests/checkify_test.py::test_custom_derivative_new_error_effect0",
+            "tests/checkify_test.py::test_custom_derivative_new_error_effect1"
+          ],
+          "result": "passed",
+          "detail": "The same 2 cases passed at 5cd3c4253c10f6c9a7705b1709a824c6fca2f160. The complete checkify suite passed all 131 cases. The standalone example produced -0.9899925."
+        },
         {
           "base": "dc4af684446e65ee98eee8090e1ff6f8211473fb",
           "native_build": "jaxlib 0.12.0.1 CPU",
@@ -254,8 +348,8 @@
       ],
       "draft": {
         "title": "Differentiating a staged checkified custom rule can fail on output arity",
-        "prepared_at": "2026-11-18T12:05:38Z",
-        "body": "## Reproducer\n\nOn JAX 0.12.0.1 with the CPU runtime, run\n\n```python\nimport jax\nimport jax.numpy as jnp\nfrom jax.experimental import checkify\n\nf = jax.custom_jvp(jnp.sin)\nf.defjvp(lambda p, t: (jnp.sin(p[0]), jnp.cos(p[0]) * t[0]))\nchecked = jax.jit(checkify.checkify(f, errors=checkify.float_checks))\nprint(jax.grad(lambda x: checked(x)[1])(3.))\n```\n\n## Observed\n\nThe staged equation expects the error effects produced by sin. Its derivative forwards fewer leaves and raises ValueError while matching outputs.\n\n## Expected\n\nThe gradient should be cos(3), and a check raised before a custom call should still reach its caller.\n\n## Proposed fix\n\nPad the forwarded error with placeholders for any new output effects from the staged primal. Consume the matching number of error cotangents in the VJP."
+        "prepared_at": "2026-11-18T22:11:29+00:00",
+        "body": "## Reproducer\n\nOn JAX main at `4ced1e1f63ba` with jaxlib 0.12.1 on CPU, run\n\n```python\nimport jax\nimport jax.numpy as jnp\nfrom jax.experimental import checkify\n\nf = jax.custom_jvp(jnp.sin)\nf.defjvp(lambda p, t: (jnp.sin(p[0]), jnp.cos(p[0]) * t[0]))\nchecked = jax.jit(checkify.checkify(f, errors=checkify.float_checks))\nprint(jax.grad(lambda x: checked(x)[1])(3.))\n```\n\n## Observed\n\nThe staged equation expects the error effects produced by sin. Its derivative forwards fewer leaves and raises ValueError while matching outputs.\n\n## Expected\n\nThe gradient should be cos(3), and a check raised before a custom call should still reach its caller.\n\n## Proposed fix\n\nPad the forwarded error with placeholders for any new output effects from the staged primal. Consume the matching number of error cotangents in the VJP."
       }
     }
   ]
