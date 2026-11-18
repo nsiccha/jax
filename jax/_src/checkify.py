@@ -230,6 +230,33 @@ class Error:
   def throw(self):
     _check_error(self)
 
+  def has_error(self) -> Array:
+    """Returns a boolean array which is True if an error happened.
+
+    Unlike :meth:`get`, :meth:`get_exception` and :meth:`throw`, this method
+    doesn't need a concrete error value. So it can be used to handle an error
+    inside of a transformed function, like one under :func:`jax.jit`:
+
+    >>> import jax
+    >>> import jax.numpy as jnp
+    >>> from jax.experimental import checkify
+    >>> def f(x):
+    ...   checkify.check(x > 0, "must be positive!")
+    ...   return jnp.log(x)
+    >>> @jax.jit
+    ... def log_or_neg_inf(x):
+    ...   err, y = checkify.checkify(f)(x)
+    ...   return jnp.where(err.has_error(), -jnp.inf, y)
+    >>> print(log_or_neg_inf(-1.))
+    -inf
+
+    The result has the shape of the error value: a mapped error value, as
+    returned by ``jax.vmap(checkify.checkify(f))``, gives one boolean per
+    element of the mapped dimension.
+    """
+    return functools.reduce(jnp.logical_or, self._pred.values(),
+                            jnp.asarray(False))
+
   def __str__(self):
     return f'Error({self.get()})'
 

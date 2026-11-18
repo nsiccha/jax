@@ -126,6 +126,18 @@ err.throw()
 
 We call this functionalizing or discharging the effect introduced by calling check. (In the "manual" example above the error value is just a boolean. checkify's error values are conceptually similar but also track error messages and expose throw and get methods; see {mod}`jax.experimental.checkify`). `checkify.check` also allows you to add run-time values to your error message by providing them as format arguments to the error message.
 
+`throw` and `get` need a concrete error value, so they are called outside of `jit`. To instead handle an error inside of a transformed function, use the error value's `has_error` method, which returns a boolean array:
+
+```python
+@jax.jit
+def log_or_neg_inf(x):
+  err, y = f_checked(x)
+  return jnp.where(err.has_error(), -jnp.inf, y)
+
+log_or_neg_inf(-1.)
+# -inf
+```
+
 You could now manually instrument your code with run-time checks, but `checkify` can also automatically add checks for common errors!
 Consider these error cases:
 
