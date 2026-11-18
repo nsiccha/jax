@@ -703,17 +703,19 @@ NB_MODULE(_jax, m) {
       "dlpack_managed_tensor_to_buffer",
       [](const nb::capsule& tensor, nb_class_ptr<PyDevice> device,
          std::optional<std::intptr_t> stream, std::optional<bool> copy,
-         std::optional<int> dl_device_type) {
+         std::optional<int> dl_device_type, nb::object layout) {
         std::optional<DLDeviceType> dl_dt;
         if (dl_device_type.has_value()) {
           dl_dt = static_cast<DLDeviceType>(*dl_device_type);
         }
         return xla::ValueOrThrow(DLPackManagedTensorToBuffer(
-            tensor, device->device(), device->client(), stream, copy, dl_dt));
+            tensor, device->device(), device->client(), stream, copy, dl_dt,
+            std::move(layout)));
       },
       nb::arg("dlpack"), nb::arg("device"), nb::arg("stream").none(),
       nb::arg("copy").none() = nb::none(),
       nb::arg("dl_device_type").none() = nb::none(),
+      nb::arg("layout").none() = nb::none(),
       nb::sig(
           // clang-format off
       "def dlpack_managed_tensor_to_buffer("
@@ -721,7 +723,8 @@ NB_MODULE(_jax, m) {
       "device: Device, "
       "stream: int | None, "
       "copy: bool | None = ..., "
-      "dl_device_type: int | None = ..."
+      "dl_device_type: int | None = ..., "
+      "layout: object = ..."
       ") -> ArrayImpl"
           // clang-format on
           ));
@@ -1194,7 +1197,13 @@ NB_MODULE(_jax, m) {
   m.def("check_and_canonicalize_memory_kind", &CheckAndCanonicalizeMemoryKind,
         nb::arg("memory_kind").none(), nb::arg("device_list"));
 
-  m.attr("ifrt_version_number") = JAX_IFRT_VERSION_NUMBER;
+  // TODO(phawkins): Remove the JAX_IFRT_VERSION_NUMBER fallback once pinned XLA
+  // defines JAX_XLA_VERSION_NUMBER.
+#ifdef JAX_XLA_VERSION_NUMBER
+  m.attr("xla_version_number") = JAX_XLA_VERSION_NUMBER;
+#else
+  m.attr("xla_version_number") = JAX_IFRT_VERSION_NUMBER;
+#endif
 
   m.def("approx_top_k_reduction_output_size",
         xla::ValueOrThrowWrapper(xla::ApproxTopKReductionOutputSize),

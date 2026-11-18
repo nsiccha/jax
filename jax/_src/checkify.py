@@ -625,22 +625,25 @@ def check_nans(prim, ctx: CheckifyContext, error, enabled_errors, out):
 
 
 # All primitives which can generate a NaN.
-nan_primitives = [lax.acos_p, lax.acosh_p, lax.add_p, lax.asin_p, lax.asinh_p,
-                  lax.atan2_p, lax.atan_p, lax.atanh_p, lax.bessel_i0e_p,
-                  lax.bessel_i1e_p, lax.cbrt_p, lax.conv_general_dilated_p,
-                  lax.cos_p, lax.cosh_p, lax.cumlogsumexp_p, lax.cummax_p,
-                  lax.cummin_p, lax.cumprod_p, lax.cumsum_p, lax.digamma_p,
-                  lax.dot_general_p, lax.erf_inv_p, lax.erf_p, lax.erfc_p,
-                  lax.exp_p, lax.exp2_p, lax.expm1_p, lax.fft_p,
-                  lax.igamma_grad_a_p, lax.igamma_p, lax.igammac_p,
-                  lax.integer_pow_p, lax.lgamma_p, lax.linear_solve_p,
-                  lax.log1p_p, lax.log2_p, lax.log_p, lax.logistic_p,
-                  lax.mul_p, lax.pad_p, lax.pow_p, lax.psum_p,
-                  lax.reduce_p, lax.reduce_prod_p,
-                  lax.reduce_sum_p, lax.reduce_window_p,
-                  lax.reduce_window_sum_p, lax.regularized_incomplete_beta_p,
-                  lax.rem_p, lax.rng_uniform_p, lax.rsqrt_p, lax.sin_p,
-                  lax.sinh_p, lax.sqrt_p, lax.sub_p, lax.tan_p, lax.tanh_p]
+nan_primitives = [lax.acos_p, lax.acosh_p, lax.acospi_p, lax.add_p,
+                  lax.asin_p, lax.asinh_p, lax.asinpi_p, lax.atan2_p,
+                  lax.atan2pi_p, lax.atan_p, lax.atanh_p, lax.atanpi_p,
+                  lax.bessel_i0e_p, lax.bessel_i1e_p, lax.cbrt_p,
+                  lax.conv_general_dilated_p, lax.cos_p, lax.cosh_p,
+                  lax.cospi_p, lax.cumlogsumexp_p, lax.cummax_p, lax.cummin_p,
+                  lax.cumprod_p, lax.cumsum_p, lax.digamma_p, lax.dot_general_p,
+                  lax.erf_inv_p, lax.erf_p, lax.erfc_p, lax.exp_p, lax.exp2_p,
+                  lax.exp2m1_p, lax.expm1_p, lax.fft_p, lax.igamma_grad_a_p,
+                  lax.igamma_p, lax.igammac_p, lax.integer_pow_p, lax.lgamma_p,
+                  lax.linear_solve_p, lax.log1p_p, lax.log2_p, lax.log2p1_p,
+                  lax.log_p, lax.logistic_p, lax.mul_p, lax.pad_p, lax.pow_p,
+                  lax.psum_p,
+                  lax.reduce_p, lax.reduce_prod_p, lax.reduce_sum_p,
+                  lax.reduce_window_p, lax.reduce_window_sum_p,
+                  lax.regularized_incomplete_beta_p, lax.rem_p,
+                  lax.rng_uniform_p, lax.rsqrt_p, lax.sin_p, lax.sinh_p,
+                  lax.sinpi_p, lax.sqrt_p, lax.sub_p, lax.tan_p, lax.tanh_p,
+                  lax.tanpi_p]
 
 for _prim in nan_primitives:
   error_checks[_prim] = functools.partial(nan_error_check, _prim)
@@ -683,11 +686,13 @@ error_checks[lax.dynamic_update_slice_p] = dynamic_update_slice_error_check
 
 def gather_error_check(ctx: CheckifyContext, error, enabled_errors, operand,
                        start_indices, *, dimension_numbers, slice_sizes,
-                       unique_indices, indices_are_sorted, mode, fill_value):
+                       unique_indices, indices_are_sorted, mode, fill_value,
+                       out_sharding):
   out = lax.gather_p.bind(
       operand, start_indices, dimension_numbers=dimension_numbers,
       slice_sizes=slice_sizes, unique_indices=unique_indices,
-      indices_are_sorted=indices_are_sorted, mode=mode, fill_value=fill_value)
+      indices_are_sorted=indices_are_sorted, mode=mode, fill_value=fill_value,
+      out_sharding=out_sharding)
 
   if OOBError not in enabled_errors:
     return error, out
@@ -758,13 +763,14 @@ def scatter_oob(operand, indices, updates, dnums):
 def scatter_error_check(prim, ctx: CheckifyContext, error, enabled_errors,
                         operand, indices, updates, *, update_jaxpr,
                         update_consts, dimension_numbers,
-                        indices_are_sorted, unique_indices, mode):
+                        indices_are_sorted, unique_indices, mode,
+                        out_sharding=None):
   """Checks if indices are within bounds and update does not generate NaN."""
   out = prim.bind(
       operand, indices, updates, update_jaxpr=update_jaxpr,
       update_consts=update_consts, dimension_numbers=dimension_numbers,
       indices_are_sorted=indices_are_sorted, unique_indices=unique_indices,
-      mode=mode)
+      mode=mode, out_sharding=out_sharding)
 
   if OOBError not in enabled_errors:
     return error, out
@@ -1240,15 +1246,8 @@ def custom_vjp_call_rule(ctx: CheckifyContext, in_err, enabled_errors, *in_vals,
   # the error values and the consts get zero cotangents
   zero_cts = tuple(ad.Zero(core.typeof(x).to_ct_aval())
                    for x in [*err_vals, *in_vals[:num_consts]])
-  def bwd_with_errs(*args):
-    # the bwd rule doesn't expect cotangents for the error values
-    out_tree, res_tree, _ = out_trees()
-    res, cts_out = split_list(args, [res_tree.num_leaves])
-    cts_out = cts_out[len(cts_out) - out_tree.num_leaves:]
-    # flat bwd returns a (cts, logs) pair
-    cts_in, logs = bwd.call_wrapped(*res, *cts_out)
-    return (*zero_cts, *cts_in), logs
-  bwd_ = lu.wrap_init(bwd_with_errs, debug_info=bwd.debug_info)
+  bwd_ = custom_derivatives.prepend_input_cts(
+      _drop_error_cts(bwd, out_trees), zero_cts)
   checkified_fwd_wrapped, fwd_out_tree = flatten_fun_output(checkified_fwd_wrapped)
   all_outs = custom_derivatives.custom_vjp_call_p.bind(
       *err_vals, *in_vals, out_trees=out_trees_, symbolic_zeros=symbolic_zeros,
@@ -1263,6 +1262,33 @@ def custom_vjp_call_rule(ctx: CheckifyContext, in_err, enabled_errors, *in_vals,
     out_err = jtu.tree_unflatten(err_tree, err_vals)
   return out_err, out_vals
 error_checks[custom_derivatives.custom_vjp_call_p] = custom_vjp_call_rule
+
+# The bwd rule doesn't expect cotangents for the error values that checkify
+# adds to the outputs of the fwd rule, so we drop them.
+def _drop_error_cts(bwd: lu.WrappedFun, out_trees) -> lu.WrappedFun:
+  def drop(cts_out):
+    out_tree, _, _ = out_trees()
+    return cts_out[len(cts_out) - out_tree.num_leaves:]
+  if not bwd.transforms and isinstance(bwd.f, ad.CustomBwdWithAccums):
+    return lu.wrap_init(_DropErrorCtsBwdWithAccums(bwd.f, drop, out_trees),
+                        debug_info=bwd.debug_info)
+  def new_bwd(*args):
+    _, res_tree, _ = out_trees()
+    res, cts_out = split_list(args, [res_tree.num_leaves])
+    return bwd.call_wrapped(*res, *drop(cts_out))
+  return lu.wrap_init(new_bwd, debug_info=bwd.debug_info)
+
+class _DropErrorCtsBwdWithAccums(ad.CustomBwdWithAccums):
+  def __init__(self, bwd, drop, out_trees):
+    self.bwd, self.drop, self.out_trees = bwd, drop, out_trees
+
+  def call_with_accums(self, res, cts_out, accums):
+    return self.bwd.call_with_accums(res, self.drop(cts_out), accums)
+
+  def __call__(self, *args):
+    _, res_tree, _ = self.out_trees()
+    res, cts_out = split_list(args, [res_tree.num_leaves])
+    return self.bwd(*res, *self.drop(cts_out))
 
 
 def check_discharge_rule(ctx: CheckifyContext, error, enabled_errors, *args,

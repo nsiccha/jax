@@ -16,14 +16,119 @@ When releasing, please add the new-release-boilerplate to docs/pallas/CHANGELOG.
 
 ## Unreleased
 
-## JAX 0.12.0.1 (October 20, 2026)
+* New features
+  * Added a `with_logs` option to {func}`jax.grad` and
+    {func}`jax.value_and_grad`, returning backward-pass logs alongside
+    gradients without calling {func}`jax.vjp` directly.
+  * Added `jax.lax.DotAlgorithmPreset.F8E4M3FN_F8E4M3FN_F32_X3` and
+    `F8E4M3FN_F8E4M3FN_F32_X4` dot algorithm presets (requiring `jaxlib` >= 514)
+    for emulating `bfloat16` precision matmuls on `bfloat16` or `float32` inputs
+    using 3 or 4 `float8_e4m3fn` dot products accumulated in `float32`.
+  * When neither `XLA_CLIENT_MEM_FRACTION` nor its deprecated alias
+    `XLA_PYTHON_CLIENT_MEM_FRACTION` is set, the GPU client now selects XLA's
+    `0.75+` memory policy. The default preallocated spatial BFC pool starts at
+    75% of total GPU memory and can grow for ordinary buffers as needed, up to
+    available device memory. Set `XLA_CLIENT_MEM_FRACTION=0.75` to retain the
+    previous fixed limit. Explicit XLA memory-policy flags take precedence;
+    allocator modes that do not support growth retain their existing behavior.
+  * {func}`jax.dlpack.from_dlpack` now accepts `Format` in its `device` argument
+    to specify device-local layouts (such as linear layout `tiling=((1,),)` for
+    `kDLTPUHost` buffers) and supports `copy=None` fallback for `kDLTPUHost`.
+  * Added {func}`jax.scipy.special.gammaincinv` and
+    {func}`jax.scipy.special.gammainccinv`, the inverses of the regularized
+    incomplete gamma functions, with gradients with respect to both arguments.
+  * Added {func}`jax.scipy.special.jn`, {func}`jax.scipy.special.yn`,
+    {func}`jax.scipy.special.iv`, and {func}`jax.scipy.special.kn`,
+    providing accurate evaluation of integer-order Bessel functions and
+    modified Bessel functions of the first and second kind.
+  * Added {func}`jax.lax.sinpi`, {func}`jax.lax.cospi`, and
+    {func}`jax.lax.tanpi`, which compute `sin(pi * x)`, `cos(pi * x)`, and
+    `tan(pi * x)` more accurately than multiplying by `pi` first. They return
+    exact values at integers and half-integers and stay accurate for large
+    inputs.
+  * Added {func}`jax.scipy.special.ndtri_exp`, the inverse of
+    {func}`jax.scipy.special.log_ndtr`, with custom forward- and reverse-mode
+    derivatives.
+  * Added {func}`jax.lax.asinpi`, {func}`jax.lax.acospi`,
+    {func}`jax.lax.atanpi`, and {func}`jax.lax.atan2pi`, which compute the
+    inverse trigonometric functions divided by `pi` (`asin(x) / pi`,
+    `acos(x) / pi`, `atan(x) / pi`, and `atan2(x, y) / pi`).
+  * Added {func}`jax.lax.exp2m1` and {func}`jax.lax.log2p1`, which compute
+    `2**x - 1` and `log2(1 + x)` without losing precision near `x = 0`.
+  * Added the `has_error` method to {class}`jax.experimental.checkify.Error`,
+    which returns whether an error happened as a boolean array. Unlike `get`
+    and `throw`, it can be called on a traced error value, e.g. to handle an
+    error inside of {func}`jax.jit`.
+
+* Breaking changes
+  * The `jax_use_simplified_jaxpr_constants` configuration flag is now `True`
+    by default. This changes the handling of closed-over constants in Jaxpr.
+    See [here](https://docs.jax.dev/en/latest/internals/constants.html) for
+    more details, including how to recognize a breakage and migrate your code.
+    The flag will be removed in a future release.
+
+* Deprecations
+  * `jax.sharding.SingleDeviceSharding` is deprecated; use
+    `jax.sharding.make_single_device_sharding` or
+    `jax.sharding.is_single_device_sharding` instead.
+  * The `jax_use_shardy_partitioner` configuration flag is deprecated and is now
+    a no-op. JAX always lowers to Shardy, and the flag will be removed in a
+    future release.
+  * The `jax.scipy.special.bessel_jn` function is deprecated; use the new
+    `jax.scipy.special.jn` instead, which is more accurate and provides
+    direct evaluation of only the nth bessel function.
+
+* Changes
+  * Mixed real and complex {func}`jax.numpy.add`, {func}`jax.numpy.subtract`,
+    {func}`jax.numpy.multiply`, and {func}`jax.numpy.true_divide`
+    (`complex / real`) no longer convert the real input to complex before
+    operating. This avoids unnecessary operations on zeros and fixes edge cases
+    with infinities and signed zeros (for example, `0.5 * (inf + 1j)` now
+    returns `inf + 0.5j` instead of `inf + nan*j`).
+  * JAX now uses Bazel 9.3.1 to build from source.
+  * On GPU and TPU, `accumulate` for {func}`jax.numpy.bitwise_and`,
+    {func}`jax.numpy.bitwise_or`, {func}`jax.numpy.bitwise_xor`,
+    {func}`jax.numpy.logical_and`, {func}`jax.numpy.logical_or`,
+    {func}`jax.numpy.logical_xor`, {func}`jax.numpy.maximum` and
+    {func}`jax.numpy.minimum` now uses a parallel prefix scan for integer and
+    boolean outputs, which is much faster for long axes ({jax-issue}`#28097`).
+
+* Bug fixes
+  * {func}`jax.scipy.linalg.polar` with `method="qdwh"` now honors
+    `max_iterations` and accepts `eps`, as documented; previously
+    `max_iterations` was silently ignored and any `eps` raised a `ValueError`.
+    Both arguments are now static, so passing a traced value for either raises
+    an error.
+  * Fixed {func}`jax.numpy.modf` returning `nan` as the fractional part for
+    infinite inputs; it now returns a signed zero, matching NumPy
+    ({jax-issue}`#41102`).
+  * Fixed {func}`jax.jit` instances of the same function that differ only in
+    `static_argnums`, `static_argnames` or `keep_unused` sharing C++ dispatch
+    cache entries, which could run the executable compiled for one instance
+    with the arguments of another and return wrong results.
+  * Fixed {func}`jax.numpy.interp` returning `nan` at and around knots whose
+    `fp` value is infinite; it now returns the knot value or the signed
+    infinity, matching NumPy. For complex `fp`, the real and imaginary parts
+    are now interpolated separately, as in NumPy.
+  * Fixed {mod}`jax.experimental.checkify` giving wrong gradients for, or
+    failing to differentiate, a {func}`jax.custom_vjp` function that is called
+    after a check, such as a {func}`jax.experimental.checkify.check`.
+  * Fixed {mod}`jax.experimental.checkify` losing an error from before a call
+    to a {func}`jax.custom_jvp` function that closes over an array, when the
+    checkified function is differentiated.
+  * Fixed {mod}`jax.experimental.checkify` failing to differentiate a staged
+    call to a {func}`jax.custom_jvp` or {func}`jax.custom_vjp` function whose
+    body adds a new category of error, as in `jax.grad` of `jax.jit` of
+    `checkify` with automatic checks.
+
+## JAX 0.12.0.1 (October 23, 2026)
 
 * Bug fixes
   * Built C++-generated intrinsic LLVM IR on Windows with `clang-cl` instead of
     emitting empty bitcode, enabling vectorized CPU intrinsics on Windows
     (https://github.com/openxla/xla/commit/3af77b5776fbc41a65d54876cc837bdc57540005).
 
-## JAX 0.12.0 (October 15, 2026)
+## JAX 0.12.0 (October 19, 2026)
 
 * New features
   * Added {func}`jax.scipy.special.erfcinv` for the inverse complementary
